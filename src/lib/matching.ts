@@ -3,6 +3,7 @@ import {
   getUnmatchedUsers,
   createMatch,
   updateUser,
+  getMatchBetweenUsers,
 } from './supabase';
 
 export async function findMatch(currentUser: User): Promise<string | null> {
@@ -41,16 +42,38 @@ export async function findMatch(currentUser: User): Promise<string | null> {
     return { user, score };
   });
 
+  scoredUsers.forEach(({ user, score }) => {
+    console.log(`[MATCH DEBUG] Candidate: ${user.users_name} (${user.id}), Score: ${score}`);
+  });
+
   scoredUsers.sort((a, b) => b.score - a.score);
 
   const bestMatch = scoredUsers[0];
   console.log('✨ Best match:', bestMatch?.user.users_name, '- Score:', bestMatch?.score);
-  
-  if (bestMatch && bestMatch.score > 0) {
+
+  // Allow match even if score is 0 (fallback)
+  if (bestMatch) {
     const expiresAt = new Date();
     expiresAt.setHours(expiresAt.getHours() + 48);
 
-    console.log('💾 Creating match...');
+    // Check for existing active match between these two users (both directions)
+    const existingMatch = await getMatchBetweenUsers(currentUser.id, bestMatch.user.id);
+    if (existingMatch) {
+      console.log('🔗 Existing match found between users:', existingMatch.id);
+      // Make sure both are marked as matched
+      await updateUser(currentUser.id, { is_matched: true });
+      await updateUser(bestMatch.user.id, { is_matched: true });
+      return existingMatch.id;
+    }
+
+    // Double-check that both users are still unmatched before creating match
+    const latestUnmatched = await getUnmatchedUsers(currentUser.id);
+    const stillUnmatched = latestUnmatched.find(u => u.id === bestMatch.user.id);
+    if (!stillUnmatched) {
+      console.warn('Best match is no longer unmatched. Aborting match creation.');
+      return null;
+    }
+
     const match = await createMatch({
       user1_id: currentUser.id,
       user2_id: bestMatch.user.id,
@@ -63,15 +86,14 @@ export async function findMatch(currentUser: User): Promise<string | null> {
     }
 
     console.log('✅ Match created:', match.id);
-    
-    console.log('Updating user matched status...');
+    // Only now set is_matched: true for both users
     await updateUser(currentUser.id, { is_matched: true });
     await updateUser(bestMatch.user.id, { is_matched: true });
 
     return match.id;
   }
 
-  console.warn('⚠️ No compatible match found (score must be > 0)');
+  console.warn('⚠️ No compatible match found (should not happen)');
   return null;
 }
 

@@ -33,8 +33,14 @@ export default function Chat({ currentUser, match, partner }: ChatProps) {
       setMessages((prev) => [...prev, newMsg]);
     });
 
+    // Poll for new messages every 2 seconds as fallback
+    const pollInterval = setInterval(() => {
+      loadMessages();
+    }, 2000);
+
     return () => {
       unsubscribe();
+      clearInterval(pollInterval);
     };
   }, [match.id, match.expires_at]);
 

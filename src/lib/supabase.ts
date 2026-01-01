@@ -2,7 +2,20 @@
 // PocketBase is a standalone server - no NPM package needed!
 // Just use the REST API directly
 
-const pbUrl = import.meta.env.VITE_POCKETBASE_URL || 'http://localhost:8090';
+// Support both Vite (browser) and Node.js (ts-node) environments
+let pbUrl = 'http://localhost:8090';
+try {
+  // @ts-ignore
+  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_POCKETBASE_URL) {
+    // Vite/browser
+    pbUrl = import.meta.env.VITE_POCKETBASE_URL;
+  } else if (typeof process !== 'undefined' && process.env && process.env.VITE_POCKETBASE_URL) {
+    // Node.js/ts-node
+    pbUrl = process.env.VITE_POCKETBASE_URL;
+  }
+} catch (e) {
+  // fallback to default
+}
 
 console.log('🔌 PocketBase Client initialized');
 console.log('📍 PocketBase URL:', pbUrl);
@@ -204,18 +217,54 @@ export const getMatch = async (matchId: string): Promise<Match | null> => {
 
 export const getActiveMatchByUser = async (userId: string): Promise<Match | null> => {
   try {
-    const filter = encodeURIComponent(`is_active=true && (user1_id="${userId}" || user2_id="${userId}")`);
-    const response = await pbApi.request(
-      'GET',
-      `/matches/records?filter=${filter}&limit=1`
-    );
-
-    if (response.items && response.items.length > 0) {
-      return response.items[0] as Match;
+    console.log('[MATCH DEBUG] Checking for active match for user:', userId);
+    // Try user as user1_id (is_active is stored as string in PocketBase)
+    const filter1 = encodeURIComponent(`is_active="true" && user1_id="${userId}"`);
+    const url1 = `/matches/records?filter=${filter1}&limit=1`;
+    console.log('[MATCH DEBUG] getActiveMatchByUser url1:', url1);
+    const response1 = await pbApi.request('GET', url1);
+    console.log('[MATCH DEBUG] getActiveMatchByUser response1:', response1);
+    if (response1.items && response1.items.length > 0) {
+      console.log('[MATCH DEBUG] ✅ Found match as user1_id:', response1.items[0]);
+      return response1.items[0] as Match;
     }
+    // Try user as user2_id
+    const filter2 = encodeURIComponent(`is_active="true" && user2_id="${userId}"`);
+    const url2 = `/matches/records?filter=${filter2}&limit=1`;
+    console.log('[MATCH DEBUG] getActiveMatchByUser url2:', url2);
+    const response2 = await pbApi.request('GET', url2);
+    console.log('[MATCH DEBUG] getActiveMatchByUser response2:', response2);
+    if (response2.items && response2.items.length > 0) {
+      console.log('[MATCH DEBUG] ✅ Found match as user2_id:', response2.items[0]);
+      return response2.items[0] as Match;
+    }
+    console.log('[MATCH DEBUG] ❌ No match found for user:', userId);
     return null;
   } catch (error) {
     console.error('❌ Error getting active match:', error);
+    return null;
+  }
+};
+
+// Check if a match exists between two specific users
+export const getMatchBetweenUsers = async (user1Id: string, user2Id: string): Promise<Match | null> => {
+  try {
+    // Check both directions (is_active is stored as string in PocketBase)
+    const filter1 = encodeURIComponent(`is_active="true" && user1_id="${user1Id}" && user2_id="${user2Id}"`);
+    const response1 = await pbApi.request('GET', `/matches/records?filter=${filter1}&limit=1`);
+    if (response1.items && response1.items.length > 0) {
+      return response1.items[0] as Match;
+    }
+    
+    const filter2 = encodeURIComponent(`is_active="true" && user1_id="${user2Id}" && user2_id="${user1Id}"`);
+    const response2 = await pbApi.request('GET', `/matches/records?filter=${filter2}&limit=1`);
+    if (response2.items && response2.items.length > 0) {
+      return response2.items[0] as Match;
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('❌ Error checking match between users:', error);
     return null;
   }
 };
@@ -237,6 +286,27 @@ export const getUnmatchedUsers = async (exceptUserId: string): Promise<User[]> =
 };
 
 // Message operations
+
+// Reset is_matched for users whose matches have expired or are inactive
+export const resetExpiredMatches = async (): Promise<void> => {
+  try {
+    // Get all active matches (is_active is stored as string in PocketBase)
+    const now = new Date().toISOString();
+    const filter = encodeURIComponent(`is_active="true" && expires_at<"${now}"`);
+    const response = await pbApi.request('GET', `/matches/records?filter=${filter}&perPage=500`);
+    const expiredMatches = response.items || [];
+    for (const match of expiredMatches) {
+      // Set match as inactive
+      await pbApi.request('PATCH', `/matches/records/${match.id}`, { is_active: false });
+      // Set both users as unmatched
+      await updateUser(match.user1_id, { is_matched: false });
+      await updateUser(match.user2_id, { is_matched: false });
+      console.log(`♻️ Reset is_matched for users in expired match ${match.id}`);
+    }
+  } catch (error) {
+    console.error('❌ Error resetting expired matches:', error);
+  }
+};
 export const sendMessage = async (data: {
   match_id: string;
   sender_id: string;
